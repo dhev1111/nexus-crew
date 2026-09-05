@@ -2,13 +2,18 @@
  * Server-side client for the Secure AI Gateway (Cloudflare Worker or local router).
  * Never import from client components — token must not reach the browser.
  *
- * Contract:
+ * External gateway (when AI_ROUTER_URL is set):
  *   POST {AI_ROUTER_URL}/api/chat
  *   Authorization: Bearer ${AI_ROUTER_TOKEN}
  *   body: { message: string } | { messages: [{role, content}] }
  *   response: { success, provider, model, answer }
  *   GET  {AI_ROUTER_URL}/health
+ *
+ * Internal gateway (when AI_ROUTER_URL is NOT set):
+ *   Calls the internal providers module directly with provider fallback.
  */
+
+import { chatWithFallback, hasAnyProviderKey } from "@/lib/ai-gateway/providers";
 
 export interface RouterChatResult {
   answer: string;
@@ -41,6 +46,10 @@ export function isRouterConfigured(): boolean {
   return routerBaseUrl().length > 0;
 }
 
+export function isInternalGatewayAvailable(): boolean {
+  return hasAnyProviderKey();
+}
+
 function authHeaders(): Record<string, string> {
   const token = routerToken();
   if (!token) return {};
@@ -50,7 +59,7 @@ function authHeaders(): Record<string, string> {
 export async function checkRouterHealth(timeoutMs = 5000): Promise<RouterHealth> {
   const url = routerBaseUrl();
   if (!url) {
-    return { online: false, url: "", detail: "AI_ROUTER_URL not set" };
+    return { online: false, url: "", detail: "AI_ROUTER_URL not set (internal gateway available)" };
   }
 
   const controller = new AbortController();
@@ -87,12 +96,38 @@ export async function chatViaRouter(
   options?: { timeoutMs?: number; maxRetries?: number; messages?: Array<{ role: string; content: string }> }
 ): Promise<RouterChatResult> {
   const url = routerBaseUrl();
-  if (!url) {
-    throw new Error(
-      "AI Gateway not configured. Set AI_ROUTER_URL (HTTPS Cloudflare Worker URL)."
-    );
+  const timeoutMs = options?.timeoutMs ?? 90_000;
+
+  if (url) {
+    return chatViaExternalRouter(url, message, options, timeoutMs);
   }
 
+  return chatViaInternalGateway(message, timeoutMs);
+}
+
+async function chatViaInternalGateway(
+  message: string,
+  timeoutMs: number
+): Promise<RouterChatResult> {
+  console.log("[AI ROUTER] Using internal gateway (provider fallback chain)");
+
+  const result = await chatWithFallback(message, timeoutMs);
+
+  if (result.success) {
+    console.log("[AI ROUTER] Provider:", result.provider);
+    console.log("[AI ROUTER] Model:", result.model);
+    console.log("[AI ROUTER] Success");
+  }
+
+  return result;
+}
+
+async function chatViaExternalRouter(
+  url: string,
+  message: string,
+  options: { timeoutMs?: number; maxRetries?: number; messages?: Array<{ role: string; content: string }> } | undefined,
+  timeoutMs: number
+): Promise<RouterChatResult> {
   const token = routerToken();
   if (!token) {
     throw new Error(
@@ -100,7 +135,6 @@ export async function chatViaRouter(
     );
   }
 
-  const timeoutMs = options?.timeoutMs ?? 90_000;
   const maxRetries = options?.maxRetries ?? 2;
   let lastError: Error | null = null;
 

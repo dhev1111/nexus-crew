@@ -1,7 +1,6 @@
 /**
  * LLM provider abstraction.
- * Prefer Free AI Router (AI_ROUTER_URL) when set — keys stay on the router.
- * Falls back to OpenAI-compatible direct providers when router is not configured.
+ * Priority: External Router (AI_ROUTER_URL) → Internal Gateway (provider fallback) → Direct LLM.
  * Server-side only. Never import from client components.
  */
 
@@ -10,6 +9,7 @@ import {
   isRouterConfigured,
   messagesToRouterPrompt,
 } from "@/lib/ai-router";
+import { hasAnyProviderKey } from "@/lib/ai-gateway/providers";
 
 export type LLMProvider = "openai" | "xai" | "openrouter" | "custom" | "router";
 
@@ -88,11 +88,13 @@ function getConfig() {
 }
 
 /**
- * Configured if AI Router URL is set OR a direct LLM API key is present.
+ * Configured if external AI Router URL is set, internal gateway has provider keys,
+ * or a direct LLM API key is present.
  * Keys must never be sent to the browser.
  */
 export function isLLMConfigured(): boolean {
   if (isRouterConfigured()) return true;
+  if (hasAnyProviderKey()) return true;
   const { apiKey } = getConfig();
   return Boolean(apiKey && apiKey.length > 8);
 }
@@ -116,11 +118,26 @@ export async function chatCompletion(
     };
   }
 
+  // Use internal gateway (provider fallback chain) when keys are available
+  if (hasAnyProviderKey()) {
+    const prompt = messagesToRouterPrompt(messages);
+    const result = await chatViaRouter(prompt, {
+      timeoutMs: options.timeoutMs ?? 90_000,
+      maxRetries: 2,
+    });
+    return {
+      content: result.answer,
+      model: result.model,
+      provider: result.provider,
+      raw: result,
+    };
+  }
+
   const { apiKey, baseUrl, defaultModel, fastModel } = getConfig();
 
   if (!apiKey) {
     throw new Error(
-      "No AI backend configured. Set AI_ROUTER_URL for the Free AI Router, or LLM_API_KEY for a direct provider."
+      "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router."
     );
   }
 

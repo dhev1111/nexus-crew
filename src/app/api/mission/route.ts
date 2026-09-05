@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "No AI backend configured. Set AI_ROUTER_URL (Free AI Router) or LLM_API_KEY in environment variables.",
+            "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router.",
           configured: false,
         },
         { status: 503 }

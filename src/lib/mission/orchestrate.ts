@@ -124,7 +124,7 @@ export async function runMission(
   if (!isLLMConfigured()) {
     state.status = "failed";
     state.error =
-      "No AI backend configured. Set AI_ROUTER_URL for Free AI Router, or LLM_API_KEY for a direct provider.";
+      "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router.";
     state = appendLog(state, { level: "error", message: state.error });
     await storage.saveMission(state.id, state);
     return state;
