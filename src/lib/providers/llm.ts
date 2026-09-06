@@ -125,6 +125,11 @@ export async function chatCompletion(
       timeoutMs: options.timeoutMs ?? 90_000,
       maxRetries: 2,
     });
+    if (!result.success) {
+      throw new Error(
+        `AI gateway failed (provider: ${result.provider}): ${result.answer}`
+      );
+    }
     return {
       content: result.answer,
       model: result.model,

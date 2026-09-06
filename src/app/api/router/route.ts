@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkRouterHealth, isRouterConfigured } from "@/lib/ai-router";
 import { isLLMConfigured } from "@/lib/providers/llm";
+import { hasAnyProviderKey } from "@/lib/ai-gateway/providers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,19 +12,27 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   const routerConfigured = isRouterConfigured();
+  const internalGateway = hasAnyProviderKey();
   const health = routerConfigured
     ? await checkRouterHealth(4000)
     : { online: false, url: "", detail: "AI_ROUTER_URL not set" };
 
+  const llmConfigured = isLLMConfigured();
+
   return NextResponse.json({
     service: "Nexus Crew",
     backend: {
-      llmConfigured: isLLMConfigured(),
+      llmConfigured,
       routerConfigured,
-      routerOnline: health.online,
+      internalGateway,
+      routerOnline: routerConfigured ? health.online : internalGateway,
       routerUrl: health.url ? maskUrl(health.url) : null,
       latencyMs: health.latencyMs ?? null,
-      detail: health.detail ?? null,
+      detail: routerConfigured
+        ? health.detail ?? null
+        : internalGateway
+          ? "Internal AI gateway active (provider fallback chain)"
+          : "No AI provider keys configured",
     },
   });
 }

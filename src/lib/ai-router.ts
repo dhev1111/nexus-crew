@@ -113,11 +113,15 @@ async function chatViaInternalGateway(
 
   const result = await chatWithFallback(message, timeoutMs);
 
-  if (result.success) {
-    console.log("[AI ROUTER] Provider:", result.provider);
-    console.log("[AI ROUTER] Model:", result.model);
-    console.log("[AI ROUTER] Success");
+  if (!result.success) {
+    throw new Error(
+      `Internal AI gateway failed. Provider: ${result.provider}, Reason: ${result.answer}`
+    );
   }
+
+  console.log("[AI ROUTER] Provider:", result.provider);
+  console.log("[AI ROUTER] Model:", result.model);
+  console.log("[AI ROUTER] Success");
 
   return result;
 }

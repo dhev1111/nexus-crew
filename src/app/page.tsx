@@ -40,18 +40,12 @@ export default function Home() {
         const data = await res.json();
         if (cancelled) return;
         const online = Boolean(data?.backend?.routerOnline);
-        setRouterOnline(data?.backend?.routerConfigured ? online : false);
-        setRouterDetail(
-          data?.backend?.routerConfigured
-            ? online
-              ? `AI Router ONLINE${data?.backend?.latencyMs != null ? ` · ${data.backend.latencyMs}ms` : ""}`
-              : `AI Router OFFLINE${data?.backend?.detail ? ` · ${data.backend.detail}` : ""}`
-            : "AI Router not configured"
-        );
+        setRouterOnline(online);
+        setRouterDetail(data?.backend?.detail || "Unknown");
       } catch {
         if (!cancelled) {
           setRouterOnline(false);
-          setRouterDetail("AI Router OFFLINE · unreachable");
+          setRouterDetail("AI gateway unreachable");
         }
       }
     };
@@ -176,7 +170,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <div
-              title={routerDetail || "Checking AI Router…"}
+              title={routerDetail || "Checking AI Gateway…"}
               className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium bg-zinc-900/80"
               style={{
                 borderColor:
@@ -203,10 +197,10 @@ export default function Home() {
                 }`}
               />
               {routerOnline === true
-                ? "AI Router: ONLINE"
+                ? "AI Gateway: ONLINE"
                 : routerOnline === false
-                  ? "AI Router: OFFLINE"
-                  : "AI Router: …"}
+                  ? "AI Gateway: OFFLINE"
+                  : "AI Gateway: …"}
             </div>
           <nav className="flex gap-1 bg-zinc-900 rounded-lg p-1 border border-zinc-800 shrink-0 overflow-x-auto max-w-[45vw]">
             {(["crew", "mission", "artifacts", "architecture"] as const).map((tab) => (

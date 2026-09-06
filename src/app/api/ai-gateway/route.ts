@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { chatWithFallback } from "@/lib/ai-gateway/providers";
+import { chatWithFallback, hasAnyProviderKey } from "@/lib/ai-gateway/providers";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 /**
- * GET /api/ai-gateway — health check.
+ * GET /api/ai-gateway — health check with key availability.
  */
 export async function GET() {
-  return NextResponse.json({ status: "ok" });
+  return NextResponse.json({
+    status: "ok",
+    providersConfigured: hasAnyProviderKey(),
+  });
 }
 
 /**
