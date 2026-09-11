@@ -25,7 +25,7 @@ export default function Home() {
   const [missionState, setMissionState] = useState<MissionState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "crew" | "mission" | "artifacts" | "architecture"
+    "crew" | "mission" | "artifacts" | "architecture" | "side-hustler" | "memory" | "analytics"
   >("crew");
   const [routerOnline, setRouterOnline] = useState<boolean | null>(null);
   const [routerDetail, setRouterDetail] = useState<string>("");
@@ -67,6 +67,7 @@ export default function Home() {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    let terminalEventReceived = false;
 
     try {
       const res = await fetch("/api/mission", {
@@ -94,9 +95,22 @@ export default function Home() {
       let buffer = "";
 
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        let readResult: { done: boolean; value: Uint8Array | undefined };
+        try {
+          readResult = await reader.read();
+        } catch (readErr) {
+          const msg = readErr instanceof Error ? readErr.message : "Stream read error";
+          setMissionState((prev) => {
+            if (prev && prev.status === "running") {
+              return { ...prev, status: "failed" as const, error: msg, updatedAt: Date.now() };
+            }
+            return prev;
+          });
+          setError(msg);
+          break;
+        }
+        if (readResult.done) break;
+        buffer += decoder.decode(readResult.value, { stream: true });
         const parts = buffer.split("\n\n");
         buffer = parts.pop() || "";
 
@@ -111,15 +125,33 @@ export default function Home() {
           if (!data) continue;
           try {
             const parsed = JSON.parse(data);
-            if (event === "step" || event === "done") {
+            if (event === "step") {
+              setMissionState(parsed as MissionState);
+            } else if (event === "done") {
+              terminalEventReceived = true;
               setMissionState(parsed as MissionState);
             } else if (event === "error") {
+              terminalEventReceived = true;
               setError((parsed as { error?: string }).error || "Stream error");
             }
           } catch {
             /* ignore */
           }
         }
+      }
+
+      if (!terminalEventReceived) {
+        setMissionState((prev) => {
+          if (prev && prev.status === "running") {
+            return {
+              ...prev,
+              status: "failed" as const,
+              error: "Mission stream ended before completion. The server may have timed out. Please retry.",
+              updatedAt: Date.now(),
+            };
+          }
+          return prev;
+        });
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
@@ -202,8 +234,8 @@ export default function Home() {
                   ? "AI Gateway: OFFLINE"
                   : "AI Gateway: …"}
             </div>
-          <nav className="flex gap-1 bg-zinc-900 rounded-lg p-1 border border-zinc-800 shrink-0 overflow-x-auto max-w-[45vw]">
-            {(["crew", "mission", "artifacts", "architecture"] as const).map((tab) => (
+          <nav className="flex gap-1 bg-zinc-900 rounded-lg p-1 border border-zinc-800 shrink-0 overflow-x-auto max-w-[80vw]">
+            {(["crew", "mission", "side-hustler", "artifacts", "architecture"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -364,8 +396,77 @@ export default function Home() {
                 {missionState.steps.map((step) => (
                   <StepCard key={step.id} step={step} />
                 ))}
+
+                {missionState.status === "completed" && missionState.finalResult && (
+                  <div className="rounded-2xl border border-emerald-800/50 bg-emerald-950/30 p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-emerald-400 text-lg">✓</span>
+                      <h4 className="font-semibold text-emerald-200">Mission Complete</h4>
+                    </div>
+                    <div className="text-sm text-emerald-100/80 whitespace-pre-wrap">
+                      <Markdownish content={missionState.finalResult} />
+                    </div>
+                  </div>
+                )}
+
+                {missionState.status === "failed" && (
+                  <div className="rounded-2xl border border-red-800/50 bg-red-950/30 p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-red-400 text-lg">✗</span>
+                      <h4 className="font-semibold text-red-200">Mission Failed</h4>
+                    </div>
+                    <p className="text-sm text-red-100/80">
+                      {missionState.error || "An unknown error occurred."}
+                    </p>
+                    {missionState.error?.includes("No AI backend") && (
+                      <p className="text-xs text-red-300/60 mt-2">
+                        Configure an API key in .env.local. See README for instructions.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
+          </section>
+        )}
+
+        {activeTab === "side-hustler" && (
+          <section>
+            <h3 className="text-lg font-semibold mb-4 text-zinc-200">AI Side-Hustler</h3>
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-6">
+              <p className="text-sm text-zinc-400 mb-4">
+                Run the complete Side-Hustler workflow: Research → Content → Video → Social → Analytics.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-4 mb-6">
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <h4 className="font-medium text-sm text-zinc-200 mb-2">🧠 Memory</h4>
+                  <p className="text-xs text-zinc-500">Stores strategies, preferences, and lessons learned.</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <h4 className="font-medium text-sm text-zinc-200 mb-2">🔍 Research</h4>
+                  <p className="text-xs text-zinc-500">Finds opportunities, validates demand, checks competition.</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <h4 className="font-medium text-sm text-zinc-200 mb-2">✍️ Content</h4>
+                  <p className="text-xs text-zinc-500">Generates hooks, scripts, captions, CTAs for any platform.</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <h4 className="font-medium text-sm text-zinc-200 mb-2">🎬 Video</h4>
+                  <p className="text-xs text-zinc-500">Plans storyboards, scenes, and production briefs.</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <h4 className="font-medium text-sm text-zinc-200 mb-2">📱 Social</h4>
+                  <p className="text-xs text-zinc-500">Schedules and publishes across platforms.</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <h4 className="font-medium text-sm text-zinc-200 mb-2">💰 Monetization</h4>
+                  <p className="text-xs text-zinc-500">Tracks funnels, leads, offers, and opportunities.</p>
+                </div>
+              </div>
+              <p className="text-xs text-zinc-600">
+                Use POST /api/mission with a Side-Hustler workflow or launch a mission above.
+              </p>
+            </div>
           </section>
         )}
 

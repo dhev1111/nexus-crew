@@ -11,6 +11,7 @@ import {
 } from "./state";
 import { clearMissionFiles } from "@/lib/tools";
 import { storage } from "@/lib/storage";
+import { emitExecution, emitAgent, emitAgentError } from "@/lib/observability";
 
 const MAX_CONTEXT_CHARS = 12_000;
 const GLOBAL_MAX_AGENT_ATTEMPTS = 2;
@@ -117,6 +118,7 @@ export async function runMission(
   if (!mission || mission.trim().length < 3) {
     state.status = "failed";
     state.error = "Mission text is too short.";
+    state = appendLog(state, { level: "error", message: state.error });
     await storage.saveMission(state.id, state);
     return state;
   }
@@ -126,6 +128,7 @@ export async function runMission(
     state.error =
       "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router.";
     state = appendLog(state, { level: "error", message: state.error });
+    emitExecution("execution.failed", state.error!, state.id);
     await storage.saveMission(state.id, state);
     return state;
   }
@@ -147,6 +150,9 @@ export async function runMission(
   state = appendLog(state, {
     level: "info",
     message: `Pipeline started (${pipeline.length} agents)`,
+  });
+  emitExecution("execution.started", `Pipeline started: ${pipeline.length} agents`, state.id, {
+    pipeline: pipeline.join(", "),
   });
   await storage.saveMission(state.id, state);
   await options?.onStep?.(state);
@@ -172,6 +178,7 @@ export async function runMission(
         agentId,
         message: `${def.name} started (attempt ${attempt}/${maxAttempts})`,
       });
+      emitAgent("agent.started", `${def.name} started (attempt ${attempt}/${maxAttempts})`, state.id, agentId, { attempt, maxAttempts });
       await storage.saveMission(state.id, state);
       await options?.onStep?.(state);
 
@@ -194,6 +201,10 @@ export async function runMission(
         );
 
         const content = response.content.trim();
+        if (!content) {
+          throw new Error(`${def.name} returned empty content`);
+        }
+
         state = updateStep(state, agentId, {
           status: "completed",
           output: content,
@@ -217,6 +228,11 @@ export async function runMission(
             provider: response.provider || "unknown",
           },
         });
+        emitAgent("agent.completed", `${def.name} completed (${content.length} chars)`, state.id, agentId, {
+          chars: content.length,
+          model: response.model,
+          provider: response.provider || "unknown",
+        });
         success = true;
         await storage.saveMission(state.id, state);
         await options?.onStep?.(state);
@@ -234,6 +250,7 @@ export async function runMission(
           agentId,
           message: `${def.name} error: ${lastError}`,
         });
+        emitAgentError("agent.failed", `${def.name} failed: ${lastError}`, state.id, agentId, { attempt, error: lastError });
         await storage.saveMission(state.id, state);
         await options?.onStep?.(state);
         if (attempt < maxAttempts) {
@@ -245,6 +262,9 @@ export async function runMission(
     if (!success) {
       state.status = "failed";
       state.error = `${def.name} failed after ${maxAttempts} attempts: ${lastError}`;
+      state.finalResult = state.finalResult || `Execution failed at ${def.name}: ${lastError}`;
+      state = appendLog(state, { level: "error", message: state.error });
+      emitExecution("execution.failed", state.error!, state.id, { failedAgent: agentId });
       await storage.saveMission(state.id, state);
       await options?.onStep?.(state);
       return state;
@@ -273,6 +293,7 @@ export async function runMission(
           agentId: "reviewer",
           message: "Human approval required",
         });
+        emitExecution("execution.awaiting_approval", "Human approval required", state.id);
         await storage.saveMission(state.id, state);
         await options?.onStep?.(state);
         return state;
@@ -282,7 +303,15 @@ export async function runMission(
 
   if (state.status === "running") {
     state.status = "completed";
+    if (!state.finalResult) {
+      const lastCompleted = [...state.steps].reverse().find((s) => s.status === "completed" && s.output);
+      state.finalResult = lastCompleted?.output || "Mission completed successfully.";
+    }
     state = appendLog(state, { level: "info", message: "Mission completed" });
+    emitExecution("execution.completed", "Mission completed successfully", state.id, {
+      stepsCompleted: state.steps.filter((s) => s.status === "completed").length,
+      totalSteps: state.steps.length,
+    });
   }
 
   state.updatedAt = Date.now();
