@@ -12,7 +12,16 @@ export async function GET(
   if (!id) {
     return NextResponse.json({ error: "missing id" }, { status: 400 });
   }
-  const data = (await storage.getMission(id)) as MissionState | null;
+  let data: MissionState | null;
+  try {
+    data = (await storage.getMission(id)) as MissionState | null;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("Mission persistence is not configured")) {
+      return NextResponse.json({ error: msg }, { status: 503 });
+    }
+    throw e;
+  }
   if (!data) {
     return NextResponse.json({ error: "mission not found" }, { status: 404 });
   }

@@ -9,7 +9,16 @@ export async function POST(
   ctx: { params: { id: string } }
 ) {
   const { id } = ctx.params;
-  const data = (await storage.getMission(id)) as MissionState | null;
+  let data: MissionState | null;
+  try {
+    data = (await storage.getMission(id)) as MissionState | null;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("Mission persistence is not configured")) {
+      return NextResponse.json({ error: msg }, { status: 503 });
+    }
+    throw e;
+  }
   if (!data) {
     return NextResponse.json({ error: "mission not found" }, { status: 404 });
   }
@@ -42,6 +51,14 @@ export async function POST(
     ],
   };
 
-  await storage.saveMission(id, next);
+  try {
+    await storage.saveMission(id, next);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("Mission persistence is not configured")) {
+      return NextResponse.json({ error: msg }, { status: 503 });
+    }
+    throw e;
+  }
   return NextResponse.json({ ok: true, state: next });
 }
