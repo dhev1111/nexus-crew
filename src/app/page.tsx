@@ -397,11 +397,80 @@ export default function Home() {
                   <StepCard key={step.id} step={step} />
                 ))}
 
+                {missionState.status === "blocked" && (
+                  <div className="rounded-2xl border border-amber-700/50 bg-amber-950/30 p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-amber-400 text-lg">⛔</span>
+                      <h4 className="font-semibold text-amber-200">Mission Blocked</h4>
+                    </div>
+                    <p className="text-sm text-amber-100/80">{missionState.error || "Execution was blocked."}</p>
+                  </div>
+                )}
+
+                {missionState.status === "timed_out" && (
+                  <div className="rounded-2xl border border-orange-700/50 bg-orange-950/30 p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-orange-400 text-lg">⏱️</span>
+                      <h4 className="font-semibold text-orange-200">Mission Timed Out</h4>
+                    </div>
+                    <p className="text-sm text-orange-100/80">{missionState.error || "The mission exceeded the execution budget."}</p>
+                  </div>
+                )}
+
+                {missionState.verification && (
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+                    <h4 className="font-semibold text-sm text-zinc-200 mb-3">Verification Evidence</h4>
+                    <div className="space-y-2 text-sm">
+                      {missionState.verification.build && (
+                        <div className="flex items-center gap-2">
+                          <span className={missionState.verification.build.passed ? "text-emerald-400" : "text-red-400"}>
+                            {missionState.verification.build.passed ? "✓" : "✗"}
+                          </span>
+                          <span className="text-zinc-300">Build</span>
+                          <span className="text-zinc-500 text-xs">{missionState.verification.build.details?.slice(0, 80)}</span>
+                        </div>
+                      )}
+                      {missionState.verification.tests && (
+                        <div className="flex items-center gap-2">
+                          <span className={missionState.verification.tests.passed ? "text-emerald-400" : "text-red-400"}>
+                            {missionState.verification.tests.passed ? "✓" : "✗"}
+                          </span>
+                          <span className="text-zinc-300">Tests</span>
+                          <span className="text-zinc-500 text-xs">{missionState.verification.tests.details?.slice(0, 80)}</span>
+                        </div>
+                      )}
+                      {missionState.verification.runtime && (
+                        <div className="flex items-center gap-2">
+                          <span className={missionState.verification.runtime.healthy ? "text-emerald-400" : "text-red-400"}>
+                            {missionState.verification.runtime.healthy ? "✓" : "✗"}
+                          </span>
+                          <span className="text-zinc-300">Runtime</span>
+                          <span className="text-zinc-500 text-xs">{missionState.verification.runtime.details?.slice(0, 80)}</span>
+                        </div>
+                      )}
+                      {missionState.verification.productFlow && (
+                        <div className="flex items-center gap-2">
+                          <span className={missionState.verification.productFlow.verified ? "text-emerald-400" : "text-red-400"}>
+                            {missionState.verification.productFlow.verified ? "✓" : "✗"}
+                          </span>
+                          <span className="text-zinc-300">Product Flow</span>
+                          <span className="text-zinc-500 text-xs">{missionState.verification.productFlow.checks.length} checks</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {missionState.status === "completed" && missionState.finalResult && (
                   <div className="rounded-2xl border border-emerald-800/50 bg-emerald-950/30 p-5">
                     <div className="flex items-center gap-2 mb-3">
                       <span className="text-emerald-400 text-lg">✓</span>
                       <h4 className="font-semibold text-emerald-200">Mission Complete</h4>
+                      {missionState.productResult && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-800/50 text-emerald-300 ml-2">
+                          {missionState.productResult.replace(/_/g, " ")}
+                        </span>
+                      )}
                     </div>
                     <div className="text-sm text-emerald-100/80 whitespace-pre-wrap">
                       <Markdownish content={missionState.finalResult} />
@@ -415,9 +484,10 @@ export default function Home() {
                       <span className="text-red-400 text-lg">✗</span>
                       <h4 className="font-semibold text-red-200">Mission Failed</h4>
                     </div>
-                    <p className="text-sm text-red-100/80">
-                      {missionState.error || "An unknown error occurred."}
-                    </p>
+                    <p className="text-sm text-red-100/80">{missionState.error || "An unknown error occurred."}</p>
+                    {missionState.verification?.build && !missionState.verification.build.passed && (
+                      <p className="text-xs text-red-300/60 mt-2">Build verification failed — see evidence above.</p>
+                    )}
                     {missionState.error?.includes("No AI backend") && (
                       <p className="text-xs text-red-300/60 mt-2">
                         Configure an API key in .env.local. See README for instructions.

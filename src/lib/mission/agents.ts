@@ -1,4 +1,4 @@
-import type { AgentId } from "./state";
+import type { AgentId } from "./types";
 
 export interface V1AgentDef {
   id: AgentId;

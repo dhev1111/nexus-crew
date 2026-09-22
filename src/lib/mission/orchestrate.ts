@@ -6,15 +6,19 @@ import {
   updateStep,
   appendLog,
   addArtifact,
-  AgentId,
   ApprovalRequest,
 } from "./state";
 import { clearMissionFiles } from "@/lib/tools";
 import { storage } from "@/lib/storage";
 import { emitExecution, emitAgent, emitAgentError } from "@/lib/observability";
+import { canCompleteMission, hasAnyVerification } from "./types";
+import { verifyMission } from "./verification";
+import { repairLoop } from "./repair";
+import type { VerificationEvidence, StageProgress, AgentId } from "./types";
 
 const MAX_CONTEXT_CHARS = 12_000;
 const GLOBAL_MAX_AGENT_ATTEMPTS = 2;
+const MAX_REPAIR_ATTEMPTS = 3;
 
 function selectContext(state: MissionState, upTo: AgentId): string {
   const parts: string[] = [`# User Mission\n${state.mission}`];
@@ -99,6 +103,30 @@ function needsApprovalFromReview(text: string): boolean {
   );
 }
 
+function addStageProgress(
+  state: MissionState,
+  stage: string,
+  status: string,
+  evidence?: string
+): MissionState {
+  const existing = state.stageProgress ?? [];
+  const idx = existing.findIndex((s) => s.stage === stage);
+  const entry = {
+    stage,
+    status,
+    startedAt: status === "running" ? Date.now() : undefined,
+    finishedAt: ["completed", "failed", "blocked", "timed_out"].includes(status) ? Date.now() : undefined,
+    evidence,
+  };
+  const next = idx >= 0 ? [...existing] : [...existing];
+  if (idx >= 0) {
+    next[idx] = entry;
+  } else {
+    next.push(entry);
+  }
+  return { ...state, stageProgress: next };
+}
+
 export type StepCallback = (state: MissionState) => void | Promise<void>;
 
 export async function runMission(
@@ -124,7 +152,7 @@ export async function runMission(
   }
 
   if (!isLLMConfigured()) {
-    state.status = "failed";
+    state.status = "blocked";
     state.error =
       "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router.";
     state = appendLog(state, { level: "error", message: state.error });
@@ -135,16 +163,9 @@ export async function runMission(
 
   const pipeline = options?.pipeline ?? DEFAULT_PIPELINE;
 
-  state.steps = pipeline.map((id) => {
-    const def = getV1Agent(id);
-    return {
-      id,
-      name: def.name,
-      status: "queued" as const,
-      maxAttempts: def.maxAttempts ?? GLOBAL_MAX_AGENT_ATTEMPTS,
-      attempt: 0,
-    };
-  });
+  state.stageProgress = (state.stageProgress ?? []).concat(
+    pipeline.map((id) => ({ stage: id, status: "queued" as const }))
+  );
 
   state.status = "running";
   state = appendLog(state, {
@@ -157,13 +178,19 @@ export async function runMission(
   await storage.saveMission(state.id, state);
   await options?.onStep?.(state);
 
+  let failedAgent: AgentId | undefined = undefined;
+  let lastError = "";
+  let successAgentCount = 0;
+
   for (const agentId of pipeline) {
     if (state.status === "cancelled") break;
 
     const def = getV1Agent(agentId);
     const maxAttempts = def.maxAttempts ?? GLOBAL_MAX_AGENT_ATTEMPTS;
     let success = false;
-    let lastError = "";
+    lastError = "";
+
+    state = addStageProgress(state, agentId, "running");
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       state = updateStep(state, agentId, {
@@ -234,6 +261,8 @@ export async function runMission(
           provider: response.provider || "unknown",
         });
         success = true;
+        state = addStageProgress(state, agentId, "completed");
+        successAgentCount++;
         await storage.saveMission(state.id, state);
         await options?.onStep?.(state);
         break;
@@ -260,14 +289,9 @@ export async function runMission(
     }
 
     if (!success) {
-      state.status = "failed";
-      state.error = `${def.name} failed after ${maxAttempts} attempts: ${lastError}`;
-      state.finalResult = state.finalResult || `Execution failed at ${def.name}: ${lastError}`;
-      state = appendLog(state, { level: "error", message: state.error });
-      emitExecution("execution.failed", state.error!, state.id, { failedAgent: agentId });
-      await storage.saveMission(state.id, state);
-      await options?.onStep?.(state);
-      return state;
+      failedAgent = agentId;
+      state = addStageProgress(state, agentId, "failed", lastError);
+      break;
     }
 
     if (agentId === "reviewer") {
@@ -301,17 +325,71 @@ export async function runMission(
     }
   }
 
+  if (failedAgent) {
+    state.status = "blocked";
+    state.error = `${failedAgent} failed after ${getV1Agent(failedAgent).maxAttempts ?? GLOBAL_MAX_AGENT_ATTEMPTS} attempts: ${lastError}`;
+    state.finalResult = state.finalResult || `Execution blocked at ${failedAgent}`;
+    state = appendLog(state, { level: "error", message: state.error });
+    emitExecution("execution.blocked", state.error!, state.id, { blockedAgent: failedAgent });
+    await storage.saveMission(state.id, state);
+    await options?.onStep?.(state);
+    return state;
+  }
+
   if (state.status === "running") {
-    state.status = "completed";
-    if (!state.finalResult) {
-      const lastCompleted = [...state.steps].reverse().find((s) => s.status === "completed" && s.output);
-      state.finalResult = lastCompleted?.output || "Mission completed successfully.";
+    const verificationEvidence = await runVerification(state);
+    state.verification = verificationEvidence;
+
+    if (verificationEvidence.build && !verificationEvidence.build.passed) {
+      const { evidence: repairedEvidence, attempts, success: repairSuccess } = await repairLoop(
+        process.cwd(),
+        verificationEvidence,
+        MAX_REPAIR_ATTEMPTS
+      );
+      state.verification = repairedEvidence;
+      state.stageProgress = [
+        ...(state.stageProgress ?? []),
+        { stage: "repair", status: repairSuccess ? "completed" : "failed", evidence: `${attempts.length} repair attempts` },
+      ];
+
+      if (!repairSuccess) {
+        state.status = "failed";
+        state.error = `Repair limit reached (${MAX_REPAIR_ATTEMPTS} attempts). Build could not be verified.`;
+        state.productResult = "code_generated";
+        state = appendLog(state, { level: "error", message: state.error });
+        emitExecution("execution.failed", state.error!, state.id, { reason: "repair_limit_reached" });
+        await storage.saveMission(state.id, state);
+        await options?.onStep?.(state);
+        return state;
+      }
     }
-    state = appendLog(state, { level: "info", message: "Mission completed" });
-    emitExecution("execution.completed", "Mission completed successfully", state.id, {
-      stepsCompleted: state.steps.filter((s) => s.status === "completed").length,
-      totalSteps: state.steps.length,
-    });
+
+    const { verified, status: verificationStatus } = verifyMission(state.verification ?? {});
+
+    if (verified || !hasAnyVerification(state.verification ?? {})) {
+      state.status = "completed";
+      state.productResult = verified ? "delivery_ready" : "code_generated";
+      if (!state.finalResult) {
+        const lastCompleted = [...state.steps].reverse().find((s) => s.status === "completed" && s.output);
+        state.finalResult = lastCompleted?.output || "Mission completed successfully.";
+      }
+      state = appendLog(state, { level: "info", message: "Mission completed" });
+      emitExecution("execution.completed", "Mission completed successfully", state.id, {
+        stepsCompleted: successAgentCount,
+        totalSteps: pipeline.length,
+        verified,
+        productResult: state.productResult,
+      });
+    } else {
+      state.status = "failed";
+      state.error = `Verification failed: ${verificationStatus}`;
+      state.productResult = "code_generated";
+      state = appendLog(state, { level: "error", message: state.error });
+      emitExecution("execution.failed", state.error!, state.id, { reason: "verification_failed", verificationStatus });
+      await storage.saveMission(state.id, state);
+      await options?.onStep?.(state);
+      return state;
+    }
   }
 
   state.updatedAt = Date.now();
@@ -320,4 +398,32 @@ export async function runMission(
   return state;
 }
 
-export { V1_AGENTS, DEFAULT_PIPELINE };
+async function runVerification(state: MissionState): Promise<VerificationEvidence> {
+  const evidence: VerificationEvidence = {};
+  const code = state.code ?? "";
+
+  if (code && code.length > 0) {
+    const { runBuild } = await import("./execution");
+    const buildResult = await runBuild(process.cwd(), 120_000);
+    evidence.build = {
+      passed: buildResult.ok,
+      details: buildResult.ok ? "Build succeeded" : (buildResult.stderr?.slice(0, 500) ?? "Build failed"),
+      exitCode: buildResult.exitCode ?? undefined,
+      durationMs: buildResult.durationMs,
+    };
+
+    if (buildResult.ok) {
+      const { runTest } = await import("./execution");
+      const testResult = await runTest(process.cwd(), 120_000);
+      evidence.tests = {
+        passed: testResult.ok,
+        details: testResult.ok ? "Tests passed" : (testResult.stderr?.slice(0, 500) ?? "Tests failed"),
+        durationMs: testResult.durationMs,
+      };
+    }
+  }
+
+  return evidence;
+}
+
+export { V1_AGENTS, DEFAULT_PIPELINE, MAX_REPAIR_ATTEMPTS };

@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx || true",
     "typecheck": "tsc --noEmit",
-    "test": "npx tsx src/lib/storage/__tests__/kv.test.ts && npx tsx src/lib/__tests__/sse-stream.test.ts"
+    "test": "npx tsx src/lib/storage/__tests__/kv.test.ts && npx tsx src/lib/__tests__/sse-stream.test.ts && npx tsx src/lib/mission/__tests__/verification.test.ts && npx tsx src/lib/mission/__tests__/execution.test.ts && npx tsx src/lib/mission/__tests__/repair.test.ts && npx tsx src/lib/mission/__tests__/state.test.ts"
   },
   "dependencies": {
     "next": "14.2.18",

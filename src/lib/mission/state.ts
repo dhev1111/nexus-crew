@@ -2,6 +2,8 @@
  * Shared mission state / message bus for the agent pipeline.
  */
 
+import type { AgentId, VerificationEvidence, ProductResult, StageProgress } from "./types";
+
 export type AgentStatus =
   | "queued"
   | "running"
@@ -18,24 +20,11 @@ export type MissionStatus =
   | "awaiting_approval"
   | "completed"
   | "failed"
+  | "blocked"
+  | "timed_out"
   | "cancelled";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
-
-export type AgentId =
-  | "orchestrator"
-  | "planner"
-  | "researcher"
-  | "analyst"
-  | "architect"
-  | "builder"
-  | "coder"
-  | "designer"
-  | "reviewer"
-  | "tester"
-  | "security"
-  | "deployer"
-  | "documenter";
 
 export interface Artifact {
   id: string;
@@ -123,6 +112,9 @@ export interface MissionState {
   updatedAt: number;
   error?: string;
   demo?: boolean;
+  verification?: VerificationEvidence;
+  productResult?: ProductResult;
+  stageProgress?: StageProgress[];
 }
 
 export function createMissionState(mission: string, opts?: { demo?: boolean }): MissionState {

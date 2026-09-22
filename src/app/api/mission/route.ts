@@ -8,6 +8,58 @@ import type { MissionState } from "@/lib/mission/state";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "timed_out", "cancelled"]);
+const EMITTED_TERMINALS = new Set<string>();
+
+function isTerminal(state: MissionState): boolean {
+  return TERMINAL_STATUSES.has(state.status);
+}
+
+function createTimeoutState(mission: string): MissionState {
+  return {
+    id: `mission_timeout_${Date.now()}`,
+    mission,
+    status: "timed_out",
+    error: "Mission timed out. The server execution budget was exceeded. Please try a shorter mission or retry later.",
+    steps: [],
+    artifacts: [],
+    approvals: [],
+    logs: [{ ts: Date.now(), level: "error" as const, message: "Server execution budget exceeded" }],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    verification: {},
+    productResult: "code_generated",
+    stageProgress: [{ stage: "timeout", status: "timed_out", evidence: "Server execution budget exceeded" }],
+  };
+}
+
+function createErrorState(mission: string, error: string): MissionState {
+  return {
+    id: `mission_err_${Date.now()}`,
+    mission,
+    status: "failed",
+    error,
+    steps: [],
+    artifacts: [],
+    approvals: [],
+    logs: [{ ts: Date.now(), level: "error" as const, message: error }],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    verification: {},
+    productResult: "code_generated",
+  };
+}
+
+function sendTerminal(controller: { enqueue: (data: Uint8Array) => void; close: () => void }, encoder: TextEncoder, state: MissionState, closed: { value: boolean }) {
+  if (closed.value) return;
+  const terminalKey = `${state.id}-${state.status}`;
+  if (EMITTED_TERMINALS.has(terminalKey)) return;
+  EMITTED_TERMINALS.add(terminalKey);
+  try {
+    controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify(state)}\n\n`));
+  } catch { /* already closed */ }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -31,60 +83,38 @@ export async function POST(req: NextRequest) {
     const llmConfigured = isLLMConfigured();
 
     if (stream) {
-      const encoder = new TextEncoder();
-      let closed = false;
-
       const readable = new ReadableStream({
         async start(controller) {
+          const encoder = new TextEncoder();
+          let closed = { value: false };
+
           const BUDGET_MS = 240_000;
           const budgetTimer = setTimeout(() => {
-            if (closed) return;
-            const timeoutState = {
-              id: `mission_timeout_${Date.now()}`,
-              mission,
-              status: "failed" as const,
-              error: "Mission timed out. The server execution budget was exceeded. Please try a shorter mission or retry later.",
-              steps: [],
-              artifacts: [],
-              approvals: [],
-              logs: [{ ts: Date.now(), level: "error" as const, message: "Server execution budget exceeded" }],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            };
-            send("step", timeoutState);
-            send("done", timeoutState);
-            closed = true;
+            if (closed.value) return;
+            const timeoutState = createTimeoutState(mission);
+            controller.enqueue(encoder.encode(`event: step\ndata: ${JSON.stringify(timeoutState)}\n\n`));
+            sendTerminal(controller, encoder, timeoutState, closed);
+            closed.value = true;
             try { controller.close(); } catch { /* already closed */ }
           }, BUDGET_MS);
 
           const send = (event: string, data: unknown) => {
-            if (closed) return;
+            if (closed.value) return;
             try {
               controller.enqueue(
                 encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
               );
             } catch (err) {
               console.error("[api/mission] SSE enqueue failed:", err instanceof Error ? err.message : "unknown");
-              closed = true;
+              closed.value = true;
             }
           };
 
           if (!llmConfigured) {
-            const errState = {
-              id: `mission_err_${Date.now()}`,
-              mission,
-              status: "failed" as const,
-              error: "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router.",
-              steps: [],
-              artifacts: [],
-              approvals: [],
-              logs: [{ ts: Date.now(), level: "error" as const, message: "No AI backend configured" }],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            };
+            const errState = createErrorState(mission, "No AI backend configured. Set GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY for the internal gateway, or AI_ROUTER_URL for an external router.");
             send("step", errState);
-            send("done", errState);
-            closed = true;
+            sendTerminal(controller, encoder, errState, closed);
+            closed.value = true;
             clearTimeout(budgetTimer);
             controller.close();
             return;
@@ -95,27 +125,21 @@ export async function POST(req: NextRequest) {
               demo,
               onStep: async (s: MissionState) => {
                 send("step", s);
+                if (isTerminal(s) && !EMITTED_TERMINALS.has(`${s.id}-${s.status}`)) {
+                  sendTerminal(controller, encoder, s, closed);
+                }
               },
             });
-            send("done", state);
+            if (!EMITTED_TERMINALS.has(`${state.id}-${state.status}`)) {
+              sendTerminal(controller, encoder, state, closed);
+            }
           } catch (err) {
-            const errorState = {
-              id: `mission_err_${Date.now()}`,
-              mission,
-              status: "failed" as const,
-              error: err instanceof Error ? err.message : "Pipeline error",
-              steps: [],
-              artifacts: [],
-              approvals: [],
-              logs: [{ ts: Date.now(), level: "error" as const, message: err instanceof Error ? err.message : "Pipeline error" }],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            };
+            const errorState = createErrorState(mission, err instanceof Error ? err.message : "Pipeline error");
             send("step", errorState);
-            send("done", errorState);
+            sendTerminal(controller, encoder, errorState, closed);
           } finally {
             clearTimeout(budgetTimer);
-            closed = true;
+            closed.value = true;
             try { controller.close(); } catch { /* already closed */ }
           }
         },
